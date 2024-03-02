@@ -1,0 +1,64 @@
+# 24x SMS Script using sockets.
+################################################################################
+
+# user=sck02327&pass=MSMCJD&smsto=079919925100&smsmsg=testing&smsfrom=frank
+################################################################################
+### Some Global Variables.
+################################################################################
+$USERNAME = "sck02327";
+$PASSWORD = "MSMCJD";
+$log_file = "/usr/local/var/sms.log";
+$FROM     = "none";
+$p        = "743";             # Remote Port.
+$server   = "217.154.1.2";     # Host(s)
+
+################################################################################
+# Remote Connect to SMS Server.
+################################################################################
+sub _rconnect {
+  my($srv, $port) = @_ or return 0;
+  return IO::Socket::INET->new(
+    Proto => "tcp",
+    PeerAddr => $srv,
+    PeerPort => $port
+  );
+}
+
+################################################################################
+### SMS Message to Numbers.
+################################################################################
+sub _sms {
+  my ($numbers, $message) = @_ or return 0;
+  my $str;
+  my $result =0; 
+  my $sock   = _rconnect("$server", $p);
+  my $rcode  =0;
+  my $blah;
+
+  if (defined($sock)) {
+    $sock->autoflush(1);
+    # Get From Address.
+    if ($config{from}) { $FROM = $config{from}; }
+    else { $config{from} = $config{def_from}; }
+    $message =~ s{([&])}{%26}ge;
+    $str = "user=$USERNAME&pass=$PASSWORD&smsto=$numbers&"
+         . "smsmsg=$message&smsfrom=$FROM|";
+    $sock->print("$str\r\n");
+    # Get response (2-digit numeric code)
+    while ($_ = <$sock>) { 
+      if ( $_ =~ /\r(\d\d)\s([\w\s]+)(.*)\r/ ) { 
+        $result = $1; 
+        $send_error_code = "$result";
+      }
+    }
+    $sock->close;
+  }
+  # Connection Error.
+  else { $result = 0; }
+  # Check Result.
+  if ($result eq "00") { $result = 1; }
+  else { $result = 0; }
+  return $result;
+}
+
+1;

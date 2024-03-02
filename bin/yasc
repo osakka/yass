@@ -1,0 +1,97 @@
+#!/usr/bin/perl -T
+# Perl Yet Another SMS Server. (SMSr).
+# by Omar Al-Sakka
+################################################################################
+
+###############################################################################
+### YASS Essentials.
+###############################################################################
+$yp="/usr/local/yass";
+$config_file="$yp/etc/yass.conf";
+require "$yp/lib/yasslib.pl";
+
+###############################################################################
+### Globals.
+###############################################################################
+my $provider;
+my $q_flag = 1;
+
+###############################################################################
+### Help.
+###############################################################################
+sub help {
+  print STDERR << "EOHelp";
+
+  usage: $self [-dlq] [-cfmnp 'options']
+
+  -c    configuration file
+  -d    use direct mode for sending
+  -q    display queue details
+  -l    list providers
+  -p    select provider
+  -f    from
+  -n    numbers
+  -m    message
+
+EOHelp
+exit(1);
+}
+
+###############################################################################
+### list items in queue
+###############################################################################
+sub q_list {
+  my (@qfs) = file_list($config{spool_dir}, "\\d+\.d");
+  my $cnt = $#qfs + 1;
+  if ($cnt) {
+    print qq|$config{spool_dir}\n|;
+    foreach ( 0 .. $#qfs ) {
+      my ($sfn, $blah) = split (/\./, $qfs[$_]);
+      print qq|     $_ - $sfn\n|;
+    }
+    print qq|     Total requests: $cnt\n|;
+  }
+  else { print qq|$config{spool_dir} is empty\n|; }
+  exit(0);
+}
+
+###############################################################################
+### List Providers.
+###############################################################################
+sub p_list {
+  print qq|\n service providers:\n|;
+  foreach (0 .. $#spl) {
+    my ($fn, $ex) = split (/\./, $spl[$_]);
+    print qq| $_ - $fn|;
+    if ($fn eq $config{def_provider}) { print qq| (default) |; }
+    print "\n";
+  }
+  print "\n";
+  exit(0);
+}
+
+###############################################################################
+### Start Everything Here.
+###############################################################################
+MAIN: {
+  &init($config_file);
+  getopts("f:qdc:p:n:m:l", \my %opt) or &help;
+  if ($opt{c}) { $config_file = "$opt{c}"; }
+  else { &config_slurp("$config_file"); }
+  if ($opt{q}) { &q_list; }
+  (@spl) = file_list($config{provider_defs}, "\\w+\.def");
+  if ($opt{l}) { &p_list; }
+  if ($opt{f}) { $config{from} = $opt{f}; }
+  else { $config{from} = $config{def_from}; }
+  if ($opt{d}) { $q_flag = 0; }
+  if ($opt{p}) { &load_pd($opt{p}) or finish("invalid provider"); }
+  else { $opt{p} = "$config{def_provider}"; &load_pd($config{def_provider}); }
+  if ($opt{n} and $opt{m}) { 
+    if (&sms($q_flag, "$opt{p}", "$config{def_from}", "$opt{n}", "$opt{m}")) {
+      print qq|$0: send success\n|;
+      exit(1);
+    }
+    else { finish (qq|failed to send message|); }
+  }
+  &help;
+}

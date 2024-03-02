@@ -1,0 +1,110 @@
+#!/usr/bin/perl -wT
+# Yet another SMS Server Client.
+# This is the Remote Client.
+# by Omar Al-Sakka
+# 02/06/2003
+
+### External Libs/Modules.
+###############################################################################
+use strict;
+use IO::Socket::INET;
+use Getopt::Std;
+use diagnostics;
+
+### Global Variables.
+###############################################################################
+my $remote_port="1160";
+my $sms_host="localhost";
+my $sms_from = "Nobody";
+my $sms_to = "";
+my $sms_message = "";
+my $sms_queue = "1";
+my $sms_provider = "";
+
+### Panic, and report error.
+###############################################################################
+sub panic {
+  print qq|$0: @_\n|;
+  exit(0);
+}
+
+### Send SMS.
+###############################################################################
+sub send_sms {
+  my $handle = IO::Socket::INET->new("$sms_host:$remote_port") or
+    panic ("connection failed");
+
+  if (defined($handle)) {
+    $handle->autoflush(1);
+
+    $handle->print ("From: $sms_from\r\n");
+    $handle->print ("To: $sms_from\r\n");
+    $handle->print ("Service: $sms_provider\r\n") if ($sms_provider ne "");
+    $handle->print ("Queue\r\n") if (!$sms_queue);
+    $handle->print ("Data\n$sms_message\n.\r\n");
+
+    # Get response.
+    while ($_ = <$handle>) {
+      if ( $_ =~ /OK/ ) { panic ("message sent"); }
+      else { panic ("message was not sent"); }
+    }
+    $handle->close;
+    panic ("message sent");
+  }
+  # Connection Error.
+  else { panic ("connection failed"); }
+  panic ("code anomaly");
+}
+
+###############################################################################
+### Help.
+###############################################################################
+sub help {
+  print STDERR << "EOHelp";
+
+  usage: $0 [-dq] [-pfmnP 'options']
+
+  -n    numbers
+  -m    message
+
+  Optional:
+
+  -s    sms server
+  -d    use direct mode for sending
+  -P    service provider
+  -p    remote port
+  -f    from
+
+EOHelp
+exit(1);
+}
+
+### Usage.
+###############################################################################
+sub usage { panic ("usage: $0 -HnmPpfqh [argument], -H for help"); }
+
+### Start Everything Here.
+###############################################################################
+MAIN: {
+  my $options = 's:n:m:p:f:qhP:';
+
+  # Install a Timeout.
+  $SIG{ALRM} = sub { panic ("connection to host timed out"); };
+  alarm(5);
+
+  # Delete Unwanted Variables.
+  delete @ENV{'IFS', 'CDPATH', 'PATH', 'ENV', 'BASH_ENV'};
+  $|++;     # Force Auto-Flush of Output Buffer.
+  getopts("$options", \my %opt) or &usage;
+   if ($opt{h}) { &help; }
+   if ($opt{s}) { $sms_host = "$opt{s}"; } else { &usage; }
+   if ($opt{n}) { $sms_to = "$opt{n}"; } else { &usage; }
+   if ($opt{m}) { $sms_message = "$opt{m}"; } else { &usage; }
+   # Options.
+   if ($opt{s}) { $sms_host = "$opt{s}"; }
+   if ($opt{P}) { $sms_provider = "$opt{P}"; }
+   if ($opt{p}) { $remote_port = "$opt{p}"; }
+   if ($opt{f}) { $sms_from = "$opt{f}"; }
+   if ($opt{d}) { $sms_queue = "0"; }
+  &send_sms;
+}

@@ -1,0 +1,343 @@
+#!/usr/bin/perl -T
+# Perl Yet Another SMS Server.
+# by Omar Al-Sakka
+################################################################################
+
+###############################################################################
+### Required for YASS.
+###############################################################################
+$yp="/usr/local/yass";
+$config_file="$yp/etc/yass.conf";
+require "$yp/lib/yasslib.pl";
+
+###############################################################################
+### Globals.
+###############################################################################
+my $server;
+my $recepients;
+my $provider;
+my $message;
+my $retry=0;
+my $q_flag=1;
+
+###############################################################################
+### Client Help.
+###############################################################################
+sub client_help {
+  my $help_text = "" .
+  "TO:       - set recepients list, commas allowed for multiple recipients\n" .
+  "FROM:     - set the from (if supported by service)\n" .
+  "SERVICE:  - set service provider\n" .
+  "DATA      - message data input, use '.' followed by newline to end\n" .
+  "RETRY     - on failed send, can be used to resend buffer contents\n" .
+  "QUEUE     - invoke to turn on/off, on is default\n" .
+  "QUIT      - disconnect from server\n";
+  return $help_text;
+}
+
+###############################################################################
+### Access List Handler.
+### Allow, Deny - Deny by Default.
+###############################################################################
+sub access_list {
+  my ($ipa) = @_ or return 0;
+
+  # Allow Access.
+  if ($config{allow_acl}) {
+    my (@tmp) = split(" ", $config{allow_acl});
+    foreach (0 .. $#tmp) {
+      return 1 if (($tmp[$_] eq "*") or ($tmp[$_] eq "$ipa"));
+    }
+  }
+  # Deny Access.
+  if ($config{deny_acl}) {
+    my (@tmp) = split(" ", $config{deny_acl});
+    foreach (0 .. $#tmp) {
+      return 0 if (($tmp[$_] eq "*") or ($tmp[$_] eq "$ipa"));
+    }
+  }
+  # Deny by Default.
+  return 0;
+}
+
+###############################################################################
+### Handle Client Communications.
+###############################################################################
+sub handle_client {
+  my $cfork;
+  my $client = $server->accept();
+  sleep(1) if (!$client);
+  if (($cfork = fork()) == 0) { 
+    exit(1) if (!$client);
+    $client->autoflush(1);
+    my $cip = $client->peerhost;
+    $0 = "yass: client [$cip]";
+    return(0) if(!&access_list("$cip"));
+    logger("connection from $cip");
+    signal_handler("client");
+    print $client qq|$config{server_id}\n\n$config{server_prompt}|;
+    while (<$client>) { 
+      chomp; chop;  # Cleanup.
+      # Data/Non-Data Section.
+      #########################################################################
+      if ($data_section) { 
+        if ( m/^\.$/ ) { 
+          if (&sms($q_flag, "$provider", "$config{from}", 
+                   "$recipients", "$message")) {
+            $recipients = "";
+            $message = "";
+            $retry=0;
+          } 
+          else { 
+            print $client &sys_mess(1);
+            $retry=1;
+          }
+          $data_section = 0;
+          print $client &sys_mess(0);
+        } else { $message .= "$_"; }
+        next;
+      }
+      else {
+        s/\t//g;      # Replace tabs by space.
+        s/\s//g;      # Replace Whitespaces with space.
+        next if ($_ eq "");
+        $_ = lc($_);
+      }
+      # Send Retry.
+      #########################################################################
+      if (/^retry$/ ) { 
+        if ($retry) { 
+          if (&sms($q_flag, "$provider", "$config{from}",
+                   "$recipients", "$message")) {
+            $recipients = "";
+            $message = "";
+            $retry=0;
+          } else { print $client &sys_mess(2); }
+        } else { print $client &sys_mess(3); }
+      }
+      # From.
+      #########################################################################
+      elsif ( /^from:/ ) {
+        my ($blah, $temp) = split(/:/);
+        $config{from} = $1 if ( $temp =~ m/([\w]+)/ );
+        if ($config{from}) { print $client &sys_mess(0); }
+        else { print $client &sys_mess(4); }
+      }
+      # Send Recipients List.
+      #########################################################################
+      elsif ( /^to:/ ) { 
+        my ($blah, $temp) = split(/:/); 
+        $recipients = $1 if ( $temp =~ m/([\d\,]+)/ );
+        if ($recipients) { print $client &sys_mess(0); }
+        else { print $client &sys_mess(5); }
+      }
+      # Service Provider Selection.
+      #########################################################################
+      elsif ( /^service:/ ) {
+        my ($blah, $temp) = split(/:/);
+        $provider = $1 if ( $temp =~ m/(\w+)/ );
+        if ($provider and load_pd($provider)) { 
+          print $client &sys_mess(0); 
+        } else { print $client &sys_mess(6); }
+      }
+      # Flag Data Entry Mode.
+      #########################################################################
+      elsif ( /^data$/) {
+        if ($recipients and $provider) { 
+          print $client &sys_mess(7);
+          $message = ""; 
+          $data_section = 1; 
+        } else { print $client &sys_mess(8); }
+      }
+      # Queue Type.
+      #########################################################################
+      elsif ( /^queue$/ ) {
+        if ($q_flag) {
+          $q_flag = 0;
+          print $client &sys_mess(9);;
+        }
+        else {
+          $q_flag = 1;
+          print $client &sys_mess(10);; 
+        }
+      }
+      # Others.
+      #########################################################################
+      elsif ( /^help$|^\?$/i ) { print $client &client_help; }
+      elsif ( /^quit$/i ) { last; }
+      else { print $client &sys_mess(11); } 
+    } 
+    # Prompt unless in Data Section.
+    continue { 
+      print $client qq|$config{server_prompt}| unless ($data_section); 
+    }
+    shutdown($client, 2);
+    close($client); 
+    exit(1);
+  } else { close ($client) if ($client); }
+}
+
+###############################################################################
+### Handle Q.
+###############################################################################
+sub q_handler {
+  my %mhash;
+
+  my (@pqfs) = file_list($config{spool_dir}, "\\d+\.h");
+  my $cnt = $#pqfs + 1;
+  if ($cnt) {
+    logger("processing queue [$cnt] messages");
+    foreach $i ( 0 .. $#pqfs ) {
+      %mhash = ();
+      my ($sfn, $blah) = split (/\./, $pqfs[$i]);
+      my $h_file = "$config{spool_dir}/$sfn.h";
+      my $d_file = "$config{spool_dir}/$sfn.d";
+      logger(qq|processing message id:$sfn|);
+      # Read in Message Header.
+      config_slurp("$h_file", \%mhash);
+      # Read in Message.
+      if ( open (MESS, "$d_file") ) {
+        while(<MESS>) { $mhash{data} .= $_; }
+        close (MESS);
+      } else { next; }
+      # SMS the Message.
+      if (&sms(0, "$mhash{service}", "$mhash{from}",
+                  "$mhash{to}", "$mhash{data}")) {
+        logger ("delivered message id:$sfn via $mhash{service}");
+      } 
+      # Failed to SMS.
+      else { 
+        # Requeue Message.
+        if ($mhash{status} lt $config{sms_retries}) {
+          $mhash{status}++;
+          logger ("failed to deliver message id: $sfn"); 
+          my $tsq = "To \"$mhash{to}\"\nFrom \"$mhash{from}\"\n"
+                  . "Service \"$mhash{service}\"\nStatus \"$mhash{status}\"\n";
+          if (! sms_q ("$tsq", "$mhash{data}")) {
+            logger ("failed to requeue message") 
+          } 
+          else { 
+            logger ("requeuing message [$mhash{status}/$config{sms_retries}]");
+          }
+        }
+        # Email the Message to Admin.
+        elsif ($mhash{status} eq $config{sms_retries}) {
+          my $m = "*** $config{subject_line} ***\n\n"
+                . "Error Code: $send_error_code\n"
+                . "Message ID: $sfn\n"
+                . "Service: $mhash{service}\n"
+                . "From: $mhash{from}\n"
+                . "To: $mhash{to}\n"
+                . "Status: $mhash{status}\n"
+                . "Message: $mhash{data}\n";
+          &admin_alert("$config{subject_line}", "$m");
+          logger ("sending alert for message id: $sfn");
+        }
+        # Alert Queue Time Exceeded, and Cunlink.
+        else { logger ("message queue time exceeded"); }
+      }
+      # Unlink Old Message.
+      cunlink ($h_file, $d_file);
+    }
+  }
+}
+
+###############################################################################
+### Initialize Queue Server.
+###############################################################################
+sub init_q_server {
+  $0 = "yass: processing queue \@$config{cycle_time}(s) intervals";
+  $config{from} = $config{def_from};
+  signal_handler("queue_processor");
+  logger("server queue processor at $config{cycle_time}(s) intervals");
+  return(1);
+}
+
+###############################################################################
+### Initialize Client Server.
+###############################################################################
+sub init_c_server {
+  $server = IO::Socket::INET->new( Proto => 'tcp', 
+            LocalHost => $config{server_ip},
+            LocalPort => $config{server_port}, 
+            Listen => $config{max_clients}, 
+            Reuse => 1,
+            Timeout => $config{connection_timeout}); 
+  finish ("can't setup server") unless $server; 
+  $0 = "yass: servicing port $config{server_port}";
+  $provider = $config{def_provider};
+  load_pd($provider) or finish("invalid default provider");
+  $config{from} = $config{def_from};
+  signal_handler("server");
+  logger("server started on port $config{server_port}");
+  return(1);
+}
+
+###############################################################################
+### Control.
+### Temporary Fix.
+###############################################################################
+sub control {
+  my ($t) = @_ or finish ("unknown init type");
+
+  if ($t eq "d") {
+    system("su - $config{server_user} -c \"$yp/bin/yass -D q\"");
+    system("su - $config{server_user} -c \"$yp/bin/yass -D c\"");
+  }
+  elsif ($t eq "t") {
+    system("su - $config{server_user} -c \"$yp/bin/yass -T q\"");
+    system("su - $config{server_user} -c \"$yp/bin/yass -T c\"");
+  }
+  exit(0);
+}
+
+###############################################################################
+### Usage.
+###############################################################################
+sub usage { return "usage: $self [-dt] [-c  'configuration file']\n"; }
+
+###############################################################################
+### Help.
+###############################################################################
+sub help {
+  print "\n  " . &usage . "
+  -d    daemonize.
+  -t    terminate.
+  -c    specify a configuration file.\n\n";
+  exit(1);
+}
+
+###############################################################################
+### Start Everything Here.
+###############################################################################
+MAIN: {
+  &init($config_file);
+  getopts("hdtc:T:D:", \my %opt) or &help;
+  # Help.
+  if ($opt{h}) { &help; }
+  # Configuration File.
+  if ($opt{c}) { $config_file = "$opt{c}"; }
+  else { &config_slurp("$config_file"); }
+  # Control.
+  if ($opt{d}) { &control("d"); }
+  elsif ($opt{t}) { &control("t"); }
+  # Terminate Connectivity.
+  elsif ($opt{T}) { 
+    if ($opt{T} eq "q") { exit( &daemon(0, "$config{qlock_file}") ); }
+    elsif ($opt{T} eq "c") { exit( &daemon(0, "$config{lock_file}") ); }
+    else { finish ("requires [c]lient/[q]ueue"); }
+  }
+  # Daemonize.
+  elsif ($opt{D}) { 
+    if ($opt{D} eq "q") {
+      exit(&daemon(1,"$config{qlock_file}", "init_q_server",
+                   "q_handler",$config{cycle_time}));
+    }
+    elsif ($opt{D} eq "c") {
+      exit(&daemon(1,"$config{lock_file}", "init_c_server",
+                   "handle_client",0));
+    }
+    else { finish ("requires [c]lient/[q]ueue"); }
+  }
+  print &usage;
+}

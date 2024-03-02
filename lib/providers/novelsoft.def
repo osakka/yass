@@ -1,0 +1,67 @@
+# Example taken from NovelSoft Ltd.
+# Modified by Omar Al-Sakka for Coulomb Ltd.
+# 20-DEC-2002
+################################################################################
+
+################################################################################
+### Some Global Variables.
+################################################################################
+$USERNAME = "brom9136";
+$PASSWORD = "ncinglat";
+$TEST = 0;                          # Testing?
+$p  = "80";                         # Remote Port.
+$h1 = "clients.sms-wap.com";        # Host(s)
+$h2 = "clients2.sms-wap.com";
+$h3 = "clients3.sms-wap.com";
+
+################################################################################
+# Remote Connect to SMS Server.
+################################################################################
+sub _rconnect {
+  my($srv, $port) = @_ or return 0;
+  return IO::Socket::INET->new(
+    Proto => "tcp",
+    PeerAddr => $srv,
+    PeerPort => $port
+  );
+}
+
+################################################################################
+### SMS Message to Numbers.
+################################################################################
+sub _sms {
+  my ($numbers, $message) = @_ or return 0;
+  my $str;
+  my $result=0; 
+  my $sock = _rconnect("$h1", $p) || 
+             _rconnect("$h2", $p) || 
+             _rconnect("$h3", $p) || return 0;
+
+  if (defined($sock)) {
+    $sock->autoflush(1);
+    $message =~ s{([&\+%# =])}{hx($1)}ge;
+    $str = "UID=$USERNAME&PW=$PASSWORD&N=$numbers&M=$message";
+    $str .= "&TEST=$TEST" if ($TEST);
+    my $len = length($str);
+
+    # Send request
+    $sock->print("POST /cgi/csend.cgi HTTP/1.0\n");
+    $sock->print("Host: clients.sms-wap.com\n");
+    $sock->print("Content-type: application/x-www-form-urlencoded\n");
+    $sock->print("Content-length: $len\n\n");
+    $sock->print("$str\n");
+
+    # Get response (2-digit numeric code)
+    while ($_ = <$sock>) { if (/^(\d+)/) { $result = $1; last; } }
+    $sock->close;
+    $send_error_code = "$result";
+    # Check Result.
+    if ($result eq "00") { $result = 1; }
+    else { $result = 0; }
+  }
+  # Connection Error.
+  else { $result = 0; }
+  return $result;
+}
+
+1;
